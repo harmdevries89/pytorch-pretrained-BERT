@@ -7,14 +7,14 @@ import random
 import os
 
 
-# from pytorch_lamb import Lamb, log_lamb_rs
-# from apex.fp16_utils import FP16_Optimizer
-from apex.optimizers import FusedAdam, FP16_Optimizer
+#from apex.optimizers import FusedAdam, FP16_Optimizer
+from apex.fp16_utils import FP16_Optimizer
+from fp16_opt import FP16_Module
 from apex.parallel import DistributedDataParallel as DDP
 from logging.handlers import RotatingFileHandler
 from tqdm import tqdm
 
-# from torch.distributed import DistributedDataParallel as DDP
+#from torch.distributed import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.dataset import random_split, Subset
 from torch.utils.data.sampler import RandomSampler, BatchSampler
@@ -25,6 +25,7 @@ from pytorch_pretrained_bert.modeling import BertForPreTraining, BertConfig
 from pytorch_pretrained_bert.tokenization import BertTokenizer
 from pytorch_pretrained_bert.optimization import WarmupLinearSchedule, WarmupConstantSchedule
 
+from tensorboardX import SummaryWriter
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -126,6 +127,8 @@ if __name__ == '__main__':
     rank = int(os.environ.get('RANK', 0))
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
     world_size = int(os.environ.get('WORLD_SIZE', 1))
+    global_sample_count = 0
+    event_writer = None
 
     if rank == 0:
         if os.path.exists(args.exp_dir):
@@ -134,6 +137,13 @@ if __name__ == '__main__':
         os.mkdir(args.exp_dir)
         os.mkdir(os.path.join(args.exp_dir, 'logs'))
         os.mkdir(os.path.join(args.exp_dir, 'checkpoints'))
+
+        os.mkdir(os.path.join(args.exp_dir, 'tensorboard'))
+        event_writer = SummaryWriter(os.path.join(args.exp_dir, 'tensorboard'))
+
+    def log_tb(tag, val):
+        if event_writer:
+            event_writer.add_scalar(tag, val, global_sample_count)
 
     is_distributed = (world_size > 1)
     if is_distributed:
@@ -157,9 +167,19 @@ if __name__ == '__main__':
     model = BertForPreTraining(model_config)
     logger.info(' > number of parameters: {}'.format(
         sum([p.nelement() for p in model.parameters()])))
-    if args.use_fp16:
-        model = model.half()
+
     model.cuda()
+
+    if args.use_fp16:
+        model = FP16_Module(model)
+        model.module.bert.embeddings.word_embeddings.float()
+        model.module.bert.embeddings.position_embeddings.float()
+        model.module.bert.embeddings.token_type_embeddings.float()
+        for name, _module in model.named_modules():
+            if 'LayerNorm' in name:
+                _module.float()
+
+        print(model)
 
     param_optimizer = list(model.named_parameters())
 
@@ -174,25 +194,25 @@ if __name__ == '__main__':
     ]
 
     if args.use_fp16:
+        """
         optimizer = FusedAdam(optimizer_grouped_parameters,
                           lr=args.learning_rate,
                           bias_correction=False,
                           max_grad_norm=args.max_grad_norm)
-        optimizer = FP16_Optimizer(optimizer, dynamic_loss_scale=True)
-    else:
-        optimizer = torch.optim.Adam(optimizer_grouped_parameters,
-                                     lr=args.learning_rate)
+        """
+        pass
 
+    optimizer = torch.optim.Adam(optimizer_grouped_parameters,
+                                 lr=args.learning_rate)
 
-    # optimizer = torch.optim.Adam(optimizer_grouped_parameters, lr=args.learning_rate)
+    if args.use_fp16:
+        optimizer = FP16_Optimizer(optimizer, dynamic_loss_scale=True, verbose=False)
 
     # optimizer = Lamb(optimizer_grouped_parameters, lr=args.learning_rate)
 
 
     lr_schedule = WarmupLinearSchedule(warmup=args.warmup_proportion,
                                        t_total=args.train_iters)
-    # lr_schedule = WarmupConstantSchedule(warmup=args.warmup_proportion,
-    #                                      t_total=args.train_iters)
 
     it = 1
     if args.load_ckpt is not None:
@@ -233,6 +253,8 @@ if __name__ == '__main__':
     n_iters = args.train_iters
     epoch = 1
 
+    model.train()
+
     train_lm_loss, train_nsp_loss, process_time = 0.0, 0.0, time.time()
     while it < n_iters+1:
         for batch in iter(train_loader):
@@ -248,6 +270,8 @@ if __name__ == '__main__':
             loss = lm_loss + nsp_loss
             train_nsp_loss += nsp_loss.item()
             train_lm_loss += lm_loss.item()
+
+            global_sample_count += args.batch_size * world_size
 
             if args.use_fp16:
                 # backward pass
@@ -266,14 +290,24 @@ if __name__ == '__main__':
 
             # report statistics every `args.report_iter` iterations
             if it % args.report_every == 0:
+                time_per_batch = 1000*(time.time() - process_time)/args.report_every
+                avg_train_lm_loss = train_lm_loss/args.report_every
+                avg_train_nsp_loss = train_nsp_loss/args.report_every
+                
+
                 log_str  = ' epoch{:2d} |'.format(epoch)
                 log_str += ' iteration: {:7d} |'.format(it)
-                log_str += ' train_lm_loss: {:.3E} |'.format(train_lm_loss/args.report_every)
-                log_str += ' train_nsp_loss: {:.3E} |'.format(train_nsp_loss/args.report_every)
-                log_str += ' time per batch: {:4F}ms |'.format(1000*(time.time() - process_time)/args.report_every)
+                log_str += ' train_lm_loss: {:.3E} |'.format(avg_train_lm_loss)
+                log_str += ' train_nsp_loss: {:.3E} |'.format(avg_train_nsp_loss)
+                log_str += ' time per batch: {:4F}ms |'.format(time_per_batch)
                 log_str += ' lr: {:.3E} |'.format(lr_this_step)
-                # log_str += ' loss scale: {:7d} |'.format(int(optimizer.cur_scale))
                 logger.info(log_str)
+
+                log_tb('train_lm_loss', avg_train_lm_loss)
+                log_tb('train_nsp_loss', avg_train_nsp_loss)
+                log_tb('time_per_batch', time_per_batch)
+                log_tb('lr_this_step', lr_this_step)
+
                 train_lm_loss, train_nsp_loss, process_time = 0.0, 0.0, time.time()
 
             # save checkpoint every `args.save_iter` iterations
