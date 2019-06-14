@@ -147,7 +147,8 @@ class BertConfig(object):
                  max_position_embeddings=512,
                  type_vocab_size=2,
                  initializer_range=0.02,
-                 layer_norm_eps=1e-12):
+                 layer_norm_eps=1e-12,
+                 layer_norm_fp32=True):
         """Constructs BertConfig.
 
         Args:
@@ -192,6 +193,7 @@ class BertConfig(object):
             self.type_vocab_size = type_vocab_size
             self.initializer_range = initializer_range
             self.layer_norm_eps = layer_norm_eps
+            self.layer_norm_fp32 = layer_norm_fp32
         else:
             raise ValueError("First argument must be either a vocabulary size (int)"
                              "or the path to a pretrained model config file (str)")
@@ -248,26 +250,48 @@ except ImportError:
             return self.weight * x + self.bias
 
 
-class BertLayerNorm(nn.Module):
-    def __init__(self, hidden_size, eps=1e-12):
-        """fp32 wrapper around LayerNorm
-        """
-        super(BertLayerNorm, self).__init__()
-        self.ln = LayerNorm(hidden_size, eps).half()
+class BertLayerNorm(LayerNorm):
+
+    def __init__(self, *args, **kwargs):
+        self.keep_fp32 = kwargs.pop('layer_norm_fp32', True)
+        super(BertLayerNorm, self).__init__(*args, **kwargs)
 
     def forward(self, x):
-        t = x.type()
-        x = x.type_as(self.ln.weight)
-        out = self.ln(x)
-        return out.type(t)
+        if self.keep_fp32:
+            x = x.float()
+        out = super(BertLayerNorm, self).forward(x)
+        # if self.keep_fp32:
+        #     out = out.half()
+        return out
 
-    @property
-    def bias(self):
-        return self.ln.bias
 
-    @property
-    def weight(self):
-        return self.ln.weight
+# class BertLayerNorm(nn.Module):
+#     def __init__(self, hidden_size, eps=1e-12):
+#         """fp32 wrapper around LayerNorm
+#         """
+#         super(BertLayerNorm, self).__init__()
+#         self.ln = LayerNorm(hidden_size, eps)
+#         self.add_module('module', LayerNorm(hidden_size, eps))
+#
+#     def forward(self, x):
+#         t = x.type()
+#         x = x.type_as(self.ln.weight)
+#         out = self.ln(x)
+#         return out.type(t)
+#
+#     def state_dict(self,destination=None, prefix='', keep_vars=False):
+#         return self.ln.state_dict(destination, prefix, keep_vars)
+#
+#     def load_state_dict(self, state_dict):
+#         self.ln.load_state_dict(state_dict)
+#
+#     @property
+#     def bias(self):
+#         return self.ln.bias
+#
+#     @property
+#     def weight(self):
+#         return self.ln.weight
 
 class BertEmbeddings(nn.Module):
     """Construct the embeddings from word, position and token_type embeddings.
@@ -280,7 +304,8 @@ class BertEmbeddings(nn.Module):
 
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
         # any TensorFlow checkpoint file
-        self.LayerNorm = BertLayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.LayerNorm = BertLayerNorm(config.hidden_size, eps=config.layer_norm_eps,
+                                       layer_norm_fp32=config.layer_norm_fp32)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, input_ids, token_type_ids=None):
@@ -356,7 +381,8 @@ class BertSelfOutput(nn.Module):
     def __init__(self, config):
         super(BertSelfOutput, self).__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
-        self.LayerNorm = BertLayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.LayerNorm = BertLayerNorm(config.hidden_size, eps=config.layer_norm_eps,
+                                       layer_norm_fp32=config.layer_norm_fp32)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, hidden_states, input_tensor):
