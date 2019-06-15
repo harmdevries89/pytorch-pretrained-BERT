@@ -31,5 +31,4 @@ python -m torch.distributed.launch $DISTRIBUTED_ARGS \
     --warmup-proportion 0.01 \
     --weight-decay 0.01 \
     --max-grad-norm 1.0 \
-    --batch-size 6 \
-    --use-fp16 \
+    --batch-size 20 \
