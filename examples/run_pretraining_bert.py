@@ -10,11 +10,11 @@ import os
 #from apex.optimizers import FusedAdam, FP16_Optimizer
 from apex.fp16_utils import FP16_Optimizer
 from fp16_opt import FP16_Module
-from apex.parallel import DistributedDataParallel as DDP
+# from apex.parallel import DistributedDataParallel as DDP
 from logging.handlers import RotatingFileHandler
 from tqdm import tqdm
 
-#from torch.distributed import DistributedDataParallel as DDP
+from torch.nn.parallel.distributed import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.dataset import random_split, Subset
 from torch.utils.data.sampler import RandomSampler, BatchSampler
@@ -43,6 +43,12 @@ def get_args():
                            help='Save checkpoint every `save_iter` iterations')
     exp_group.add_argument('--seed', type=int, default=1,
                            help='Random seed of experiment..')
+    # exp_group.add_argument('--rank', type=int, default=0,
+    #                        help='Rank..')
+    # exp_group.add_argument('--local_rank', type=int, default=0,
+    #                        help='Local rank..')
+    # exp_group.add_argument('--world-size', type=int, default=1,
+    #                        help='World size in distributed computing..')
 
     model_group = parser.add_argument_group('model', 'model configuration')
 
@@ -149,6 +155,7 @@ if __name__ == '__main__':
     if is_distributed:
         torch.distributed.init_process_group(backend='nccl',
                                              init_method='env://')
+        print(torch.distributed.get_rank())
     torch.cuda.set_device(local_rank)
 
     logger = create_logger(os.path.join(args.exp_dir, 'logs', 'log.%s.txt' % rank))
@@ -165,6 +172,7 @@ if __name__ == '__main__':
                               num_attention_heads=args.num_attention_heads,
                               intermediate_size=args.intermediate_size)
     model = BertForPreTraining(model_config)
+    # model = BertForPreTraining.from_pretrained('bert-large-uncased')
     logger.info(' > number of parameters: {}'.format(
         sum([p.nelement() for p in model.parameters()])))
 
@@ -224,7 +232,7 @@ if __name__ == '__main__':
 
 
     if is_distributed:
-        model = DDP(model, delay_allreduce=False)
+        model = DDP(model, device_ids=[local_rank])
 
 
     logger.info('Loading data and creating iterators...')
