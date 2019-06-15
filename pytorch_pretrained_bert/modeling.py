@@ -26,7 +26,9 @@ import shutil
 import tarfile
 import tempfile
 import sys
+from scipy.stats import truncnorm
 from io import open
+import numpy
 
 import torch
 from torch import nn
@@ -571,7 +573,10 @@ class BertPreTrainedModel(nn.Module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
             # Slightly different from the TF version which uses truncated_normal for initialization
             # cf https://github.com/pytorch/pytorch/pull/5617
-            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            #module.weight.data.uniform_(-0.02, 0.02)
+            threshold = self.config.initializer_range
+            values = truncnorm.rvs(-threshold, threshold, size=module.weight.data.shape)
+            module.weight.data = torch.from_numpy(values.astype(numpy.float32))
         elif isinstance(module, BertLayerNorm):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
