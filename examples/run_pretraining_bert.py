@@ -137,10 +137,9 @@ if __name__ == '__main__':
     event_writer = None
 
     if rank == 0:
-        if os.path.exists(args.exp_dir):
-            raise ValueError('Experiment directory `%s` already exists.' % args.exp_dir)
+        if not os.path.exists(args.exp_dir):
+            os.mkdir(args.exp_dir)
 
-        os.mkdir(args.exp_dir)
         os.mkdir(os.path.join(args.exp_dir, 'logs'))
         os.mkdir(os.path.join(args.exp_dir, 'checkpoints'))
 
