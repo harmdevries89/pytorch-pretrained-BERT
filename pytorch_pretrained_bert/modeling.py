@@ -262,8 +262,8 @@ class BertLayerNorm(LayerNorm):
         if self.keep_fp32:
             x = x.float()
         out = super(BertLayerNorm, self).forward(x)
-        # if self.keep_fp32:
-        #     out = out.half()
+        if self.keep_fp32:
+            out = out.half()
         return out
 
 

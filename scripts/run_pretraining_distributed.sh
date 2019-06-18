@@ -34,4 +34,5 @@ python -m torch.distributed.launch $DISTRIBUTED_ARGS \
     --weight-decay 0.01 \
     --max-grad-norm 1.0 \
     --batch-size 20 \
+    --use-fp16 \
     > ${EXPERIMENT_DIR}/node.${NODE_RANK}.log 2> ${EXPERIMENT_DIR}/node.${NODE_RANK}.err.log
