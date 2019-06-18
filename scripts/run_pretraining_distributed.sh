@@ -14,7 +14,7 @@ export PYTHONPATH=$PWD:$PYTHONPATH
 python -m torch.distributed.launch $DISTRIBUTED_ARGS \
   examples/run_pretraining_bert.py \
     --data-path /home/hdvries/data/prep_128.txt \
-    --exp-dir /home/nathan/experiments/bert_128_fp32_embed_layernorm \
+    --exp-dir /home/hdvries/experiments/bert_128_bertadam \
     --max-position-embeddings 512 \
     --max-seq-length 128 \
     --num-layers 24 \
@@ -31,4 +31,4 @@ python -m torch.distributed.launch $DISTRIBUTED_ARGS \
     --warmup-proportion 0.01 \
     --weight-decay 0.01 \
     --max-grad-norm 1.0 \
-    --batch-size 20 \
+    --batch-size 18 \

@@ -23,7 +23,7 @@ from torch.utils.data.distributed import DistributedSampler
 from pytorch_pretrained_bert.datasets import LazyDataset, JSONDataset, BertDataset, PreprocessedBertDataset
 from pytorch_pretrained_bert.modeling import BertForPreTraining, BertConfig
 from pytorch_pretrained_bert.tokenization import BertTokenizer
-from pytorch_pretrained_bert.optimization import WarmupLinearSchedule, WarmupConstantSchedule
+from pytorch_pretrained_bert.optimization import BertAdam, WarmupLinearSchedule
 
 from tensorboardX import SummaryWriter
 
@@ -210,8 +210,14 @@ if __name__ == '__main__':
         """
         pass
 
-    optimizer = torch.optim.Adam(optimizer_grouped_parameters,
-                                 lr=args.learning_rate)
+    # optimizer = torch.optim.Adam(optimizer_grouped_parameters,
+    #                              lr=args.learning_rate,
+    #                              eps=1e-6)
+    optimizer = BertAdam(optimizer_grouped_parameters,
+                         lr=args.learning_rate,
+                         warmup=args.warmup_proportion,
+                         t_total=args.train_iters,
+                         max_grad_norm=args.max_grad_norm)
 
     if args.use_fp16:
         optimizer = FP16_Optimizer(optimizer, dynamic_loss_scale=True, verbose=False)
@@ -287,10 +293,14 @@ if __name__ == '__main__':
             else:
                 loss.backward()
 
+            # # clip gradients
+            # if not args.use_fp16:
+            #     torch.nn.utils.clip_grad_norm(model.parameters(), 1.0)
+
             # set the learning rate
-            lr_this_step = args.learning_rate * lr_schedule.get_lr(it, args.warmup_proportion)
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = lr_this_step
+            # lr_this_step = args.learning_rate * lr_schedule.get_lr(it, args.warmup_proportion)
+            # for param_group in optimizer.param_groups:
+            #     param_group['lr'] = lr_this_step
 
             # optimizer step
             optimizer.step()
@@ -308,13 +318,13 @@ if __name__ == '__main__':
                 log_str += ' train_lm_loss: {:.3E} |'.format(avg_train_lm_loss)
                 log_str += ' train_nsp_loss: {:.3E} |'.format(avg_train_nsp_loss)
                 log_str += ' time per batch: {:4F}ms |'.format(time_per_batch)
-                log_str += ' lr: {:.3E} |'.format(lr_this_step)
+                # log_str += ' lr: {:.3E} |'.format(lr_this_step)
                 logger.info(log_str)
 
                 log_tb('train_lm_loss', avg_train_lm_loss)
                 log_tb('train_nsp_loss', avg_train_nsp_loss)
                 log_tb('time_per_batch', time_per_batch)
-                log_tb('lr_this_step', lr_this_step)
+                # log_tb('lr_this_step', lr_this_step)
 
                 train_lm_loss, train_nsp_loss, process_time = 0.0, 0.0, time.time()
 
@@ -325,7 +335,12 @@ if __name__ == '__main__':
                     save_dict['model'] = model.module.state_dict()
                 else:
                     save_dict['model'] = model.state_dict()
-                save_dict['opt'] = optimizer.optimizer.state_dict()
+
+                if args.use_fp16:
+                    save_dict['opt'] = optimizer.optimizer.state_dict()
+                else:
+                    save_dict['opt'] = optimizer.state_dict()
+
                 save_dict['it'] = it
                 save_path = os.path.join(args.exp_dir, 'checkpoints', 'chkpt.%s.pt' % str(it))
                 torch.save(save_dict, save_path)

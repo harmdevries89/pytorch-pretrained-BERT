@@ -117,7 +117,6 @@ def load_tf_weights_in_bert(model, tf_checkpoint_path):
         pointer.data = torch.from_numpy(array)
     return model
 
-@torch.jit.script
 def gelu(x):
     """Implementation of the gelu activation function.
         For information: OpenAI GPT's gelu is slightly different (and gives slightly different results):
@@ -233,7 +232,8 @@ class BertConfig(object):
             writer.write(self.to_json_string())
 
 try:
-    from apex.normalization.fused_layer_norm import FusedLayerNorm as LayerNorm
+    # from apex.normalization.fused_layer_norm import FusedLayerNorm as LayerNorm
+    from torch.nn.modules.normalization import LayerNorm
 except ImportError:
     print("Better speed can be achieved with apex installed from https://www.github.com/nvidia/apex.")
     class LayerNorm(nn.Module):
@@ -575,7 +575,7 @@ class BertPreTrainedModel(nn.Module):
             # cf https://github.com/pytorch/pytorch/pull/5617
             #module.weight.data.uniform_(-0.02, 0.02)
             threshold = self.config.initializer_range
-            values = truncnorm.rvs(-threshold, threshold, size=module.weight.data.shape)
+            values = truncnorm.rvs(-2*threshold, 2*threshold, size=module.weight.data.shape)
             module.weight.data = torch.from_numpy(values.astype(numpy.float32))
         elif isinstance(module, BertLayerNorm):
             module.bias.data.zero_()
