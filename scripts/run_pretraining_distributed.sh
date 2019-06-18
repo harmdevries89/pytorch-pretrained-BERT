@@ -33,5 +33,5 @@ python -m torch.distributed.launch $DISTRIBUTED_ARGS \
     --warmup-proportion 0.01 \
     --weight-decay 0.01 \
     --max-grad-norm 1.0 \
-    --batch-size 20 \
+    --batch-size 16 \
     > ${EXPERIMENT_DIR}/node.${NODE_RANK}.log 2> ${EXPERIMENT_DIR}/node.${NODE_RANK}.err.log
