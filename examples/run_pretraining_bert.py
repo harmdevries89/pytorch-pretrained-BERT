@@ -212,11 +212,19 @@ if __name__ == '__main__':
     # optimizer = torch.optim.Adam(optimizer_grouped_parameters,
     #                              lr=args.learning_rate,
     #                              eps=1e-6)
-    optimizer = BertAdam(optimizer_grouped_parameters,
-                         lr=args.learning_rate,
-                         warmup=args.warmup_proportion,
-                         t_total=args.train_iters,
-                         max_grad_norm=args.max_grad_norm)
+    if args.use_fp16:
+        optimizer = BertAdam(optimizer_grouped_parameters,
+                             lr=args.learning_rate,
+                             warmup=args.warmup_proportion,
+                             t_total=args.train_iters,
+                             max_grad_norm=-1)
+    else:
+        optimizer = BertAdam(optimizer_grouped_parameters,
+                             lr=args.learning_rate,
+                             warmup=args.warmup_proportion,
+                             t_total=args.train_iters,
+                             max_grad_norm=args.max_grad_norm)
+
 
     if args.use_fp16:
         optimizer = FP16_Optimizer(optimizer, dynamic_loss_scale=True, verbose=False)
@@ -292,9 +300,9 @@ if __name__ == '__main__':
             else:
                 loss.backward()
 
-            # # clip gradients
-            # if not args.use_fp16:
-            #     torch.nn.utils.clip_grad_norm(model.parameters(), 1.0)
+            # clip gradients
+            if not args.use_fp16:
+                optimizer.clip_master_grads(args.max_grad_norm, norm_type=2)
 
             # set the learning rate
             # lr_this_step = args.learning_rate * lr_schedule.get_lr(it, args.warmup_proportion)
