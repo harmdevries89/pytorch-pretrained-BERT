@@ -6,15 +6,17 @@ MASTER_PORT=1234
 NNODES=$2
 NODE_RANK=$3
 N_GPUS=$4
+EXPERIMENT_DIR=$5
 
 DISTRIBUTED_ARGS="--nproc_per_node $N_GPUS --nnodes $NNODES --node_rank $NODE_RANK --master_addr $MASTER_ADDR --master_port $MASTER_PORT --use_env"
 
 export PYTHONPATH=$PWD:$PYTHONPATH
+export PYTORCH_JIT=0
 
 python -m torch.distributed.launch $DISTRIBUTED_ARGS \
   examples/run_pretraining_bert.py \
     --data-path /home/hdvries/data/prep_128.txt \
-    --exp-dir /home/hdvries/experiments/bert_128_bertadam \
+    --exp-dir ${EXPERIMENT_DIR}\
     --max-position-embeddings 512 \
     --max-seq-length 128 \
     --num-layers 24 \
@@ -31,4 +33,5 @@ python -m torch.distributed.launch $DISTRIBUTED_ARGS \
     --warmup-proportion 0.01 \
     --weight-decay 0.01 \
     --max-grad-norm 1.0 \
-    --batch-size 18 \
+    --batch-size 20 \
+    > ${EXPERIMENT_DIR}/node.${NODE_RANK}.log 2> ${EXPERIMENT_DIR}/node.${NODE_RANK}.err.log
