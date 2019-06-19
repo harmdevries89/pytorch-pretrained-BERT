@@ -169,7 +169,8 @@ if __name__ == '__main__':
                               hidden_size=args.hidden_size,
                               num_hidden_layers=args.num_layers,
                               num_attention_heads=args.num_attention_heads,
-                              intermediate_size=args.intermediate_size)
+                              intermediate_size=args.intermediate_size,
+                              layer_norm_fp32=args.use_fp16)
     model = BertForPreTraining(model_config)
     # model = BertForPreTraining.from_pretrained('bert-large-uncased')
     logger.info(' > number of parameters: {}'.format(
@@ -302,7 +303,6 @@ if __name__ == '__main__':
                 optimizer.clip_master_grads(args.max_grad_norm, norm_type=2)
             else:
                 loss.backward()
-
 
             # set the learning rate
             # lr_this_step = args.learning_rate * lr_schedule.get_lr(it, args.warmup_proportion)
