@@ -259,11 +259,12 @@ class BertLayerNorm(LayerNorm):
         super(BertLayerNorm, self).__init__(*args, **kwargs)
 
     def forward(self, x):
+        previous_type = x.dtype
         if self.keep_fp32:
             x = x.float()
         out = super(BertLayerNorm, self).forward(x)
         if self.keep_fp32:
-            out = out.half()
+            out = out.type(previous_type)
         return out
 
 
@@ -791,6 +792,7 @@ class BertModel(BertPreTrainedModel):
         embedding_output = self.embeddings(input_ids, token_type_ids)
         embedding_output = embedding_output.to(dtype=next(self.encoder.parameters()).dtype) # fp16 compatibility
 
+        print(embedding_output.dtype)
         encoded_layers = self.encoder(embedding_output,
                                       extended_attention_mask,
                                       output_all_encoded_layers=output_all_encoded_layers)

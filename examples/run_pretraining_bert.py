@@ -279,6 +279,8 @@ if __name__ == '__main__':
     train_lm_loss, train_nsp_loss, process_time = 0.0, 0.0, time.time()
     while it < n_iters+1:
         for batch in iter(train_loader):
+            if it >= n_iters + 1:
+                break
             # move to batch to gpu
             for k, v in batch.items():
                 batch[k] = batch[k].cuda()
@@ -297,12 +299,10 @@ if __name__ == '__main__':
             if args.use_fp16:
                 # backward pass
                 optimizer.backward(loss)
+                optimizer.clip_master_grads(args.max_grad_norm, norm_type=2)
             else:
                 loss.backward()
 
-            # clip gradients
-            if not args.use_fp16:
-                optimizer.clip_master_grads(args.max_grad_norm, norm_type=2)
 
             # set the learning rate
             # lr_this_step = args.learning_rate * lr_schedule.get_lr(it, args.warmup_proportion)
