@@ -133,7 +133,7 @@ if __name__ == '__main__':
     rank = int(os.environ.get('RANK', 0))
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
     world_size = int(os.environ.get('WORLD_SIZE', 1))
-    global_sample_count = 0
+    it = 1
     event_writer = None
 
     if rank == 0:
@@ -148,7 +148,7 @@ if __name__ == '__main__':
 
     def log_tb(tag, val):
         if event_writer:
-            event_writer.add_scalar(tag, val, global_sample_count)
+            event_writer.add_scalar(tag, val, it)
 
     is_distributed = (world_size > 1)
     if is_distributed:
@@ -200,6 +200,10 @@ if __name__ == '__main__':
         {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': args.weight_decay},
         {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
     ]
+    optimizer_grouped_names = [
+        [n for n, p in param_optimizer if not any(nd in n for nd in no_decay)],
+        [n for n, p in param_optimizer if any(nd in n for nd in no_decay)]
+    ]
 
     if args.use_fp16:
         """
@@ -224,7 +228,7 @@ if __name__ == '__main__':
                              lr=args.learning_rate,
                              warmup=args.warmup_proportion,
                              t_total=args.train_iters,
-                             max_grad_norm=args.max_grad_norm)
+                             max_grad_norm=-1)
 
 
     if args.use_fp16:
@@ -236,7 +240,7 @@ if __name__ == '__main__':
     lr_schedule = WarmupLinearSchedule(warmup=args.warmup_proportion,
                                        t_total=args.train_iters)
 
-    it = 1
+
     if args.load_ckpt is not None:
         logger.info('Start training from checkpoint `%s`' % args.load_ckpt)
         ckpt = torch.load(args.load_ckpt)
@@ -295,14 +299,27 @@ if __name__ == '__main__':
             train_nsp_loss += nsp_loss.item()
             train_lm_loss += lm_loss.item()
 
-            global_sample_count += args.batch_size * world_size
-
             if args.use_fp16:
                 # backward pass
                 optimizer.backward(loss)
-                optimizer.clip_master_grads(args.max_grad_norm, norm_type=2)
             else:
                 loss.backward()
+
+            # if args.use_fp16:
+            #     for p_g, n_g in zip(optimizer.optimizer.param_groups, optimizer_grouped_names):
+            #         for p, n in zip(p_g['params'], n_g):
+            #             log_tb(n + '_grad', p.grad.data.norm(2).item())
+            #             log_tb(n + '_param', p.data.norm(2).item())
+            # else:
+            #     for p_g, n_g in zip(optimizer.param_groups, optimizer_grouped_names):
+            #         for p, n in zip(p_g['params'], n_g):
+            #             log_tb(n + '_grad', p.grad.data.norm(2).item())
+            #             log_tb(n + '_param', p.data.norm(2).item())
+
+            if args.use_fp16:
+                optimizer.clip_master_grads(args.max_grad_norm, norm_type=2)
+            else:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
 
             # set the learning rate
             # lr_this_step = args.learning_rate * lr_schedule.get_lr(it, args.warmup_proportion)

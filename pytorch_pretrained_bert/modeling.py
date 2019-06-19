@@ -794,7 +794,6 @@ class BertModel(BertPreTrainedModel):
         embedding_output = self.embeddings(input_ids, token_type_ids)
         embedding_output = embedding_output.to(dtype=next(self.encoder.parameters()).dtype) # fp16 compatibility
 
-        print(embedding_output.dtype)
         encoded_layers = self.encoder(embedding_output,
                                       extended_attention_mask,
                                       output_all_encoded_layers=output_all_encoded_layers)
@@ -859,6 +858,7 @@ class BertForPreTraining(BertPreTrainedModel):
         super(BertForPreTraining, self).__init__(config)
         self.bert = BertModel(config)
         self.cls = BertPreTrainingHeads(config, self.bert.embeddings.word_embeddings.weight)
+        numpy.random.seed(1)
         self.apply(self.init_bert_weights)
 
     def forward(self, input_ids, token_type_ids=None, attention_mask=None, masked_lm_labels=None, next_sentence_label=None):
