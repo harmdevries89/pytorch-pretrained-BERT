@@ -149,7 +149,8 @@ class BertConfig(object):
                  type_vocab_size=2,
                  initializer_range=0.02,
                  layer_norm_eps=1e-12,
-                 layer_norm_fp32=True):
+                 layer_norm_fp32=True,
+                 checkpoint_act_fn=True):
         """Constructs BertConfig.
 
         Args:
@@ -195,6 +196,7 @@ class BertConfig(object):
             self.initializer_range = initializer_range
             self.layer_norm_eps = layer_norm_eps
             self.layer_norm_fp32 = layer_norm_fp32
+            self.checkpoint_act_fn = checkpoint_act_fn
         else:
             raise ValueError("First argument must be either a vocabulary size (int)"
                              "or the path to a pretrained model config file (str)")
@@ -255,15 +257,15 @@ except ImportError:
 class BertLayerNorm(LayerNorm):
 
     def __init__(self, *args, **kwargs):
-        self.keep_fp32 = kwargs.pop('layer_norm_fp32', True)
+        self.layernorm_fp32 = kwargs.pop('layer_norm_fp32', True)
         super(BertLayerNorm, self).__init__(*args, **kwargs)
 
     def forward(self, x):
         previous_type = x.dtype
-        if self.keep_fp32:
+        if self.layernorm_fp32:
             x = x.float()
         out = super(BertLayerNorm, self).forward(x)
-        if self.keep_fp32:
+        if self.layernorm_fp32:
             out = out.type(previous_type)
         return out
 
@@ -415,10 +417,14 @@ class BertIntermediate(nn.Module):
             self.intermediate_act_fn = ACT2FN[config.hidden_act]
         else:
             self.intermediate_act_fn = config.hidden_act
+        self.checkpoint_act_fn = config.checkpoint_act_fn
 
     def forward(self, hidden_states):
         hidden_states = self.dense(hidden_states)
-        hidden_states = checkpoint(self.intermediate_act_fn, hidden_states, preserve_rng_state=False)
+        if self.checkpoint_act_fn:
+            hidden_states = checkpoint(self.intermediate_act_fn, hidden_states, preserve_rng_state=False)
+        else:
+            hidden_states = self.intermediate_act_fn(hidden_states)
         return hidden_states
 
 

@@ -16,7 +16,8 @@ export PYTORCH_JIT=0
 python -m torch.distributed.launch $DISTRIBUTED_ARGS \
   examples/run_pretraining_bert.py \
     --data-path /home/hdvries/data/prep_128.txt \
-    --exp-dir ${EXPERIMENT_DIR}\
+    --exp-dir ${EXPERIMENT_DIR} \
+    --load-ckpt /home/hdvries/exp/test_args/checkpoints/chkpt.500.pt \
     --max-position-embeddings 512 \
     --max-seq-length 128 \
     --num-layers 24 \
@@ -27,7 +28,7 @@ python -m torch.distributed.launch $DISTRIBUTED_ARGS \
     --attention-dropout 0.1 \
     --train-iters 1000000 \
     --report-every 100 \
-    --save-every 10000 \
+    --save-every 500 \
     --num-workers 1 \
     --learning-rate 1e-4 \
     --warmup-proportion 0.01 \
@@ -35,4 +36,6 @@ python -m torch.distributed.launch $DISTRIBUTED_ARGS \
     --max-grad-norm 1.0 \
     --batch-size 20 \
     --use-fp16 \
+    --layernorm-fp32 \
+    --checkpoint-act-fn \
     > ${EXPERIMENT_DIR}/node.${NODE_RANK}.log 2> ${EXPERIMENT_DIR}/node.${NODE_RANK}.err.log

@@ -89,6 +89,10 @@ def get_args():
                            help='Number of training iterations')
     opt_group.add_argument('--use-fp16', action='store_true',
                            help='Training with FP16?')
+    opt_group.add_argument('--layernorm-fp32', action='store_true',
+                           help='Keep layernorm in FP32?')
+    opt_group.add_argument('--checkpoint-act-fn', action='store_true',
+                           help='Save GPU memory by gradient checkpointing of the activation fn?')
 
     return parser.parse_args()
 
@@ -154,7 +158,6 @@ if __name__ == '__main__':
     if is_distributed:
         torch.distributed.init_process_group(backend='nccl',
                                              init_method='env://')
-        print(torch.distributed.get_rank())
     torch.cuda.set_device(local_rank)
 
     logger = create_logger(os.path.join(args.exp_dir, 'logs', 'log.%s.txt' % rank))
@@ -170,11 +173,20 @@ if __name__ == '__main__':
                               num_hidden_layers=args.num_layers,
                               num_attention_heads=args.num_attention_heads,
                               intermediate_size=args.intermediate_size,
-                              layer_norm_fp32=args.use_fp16)
+                              layer_norm_fp32=args.layernorm_fp32,
+                              checkpoint_act_fn=args.checkpoint_act_fn)
     model = BertForPreTraining(model_config)
     # model = BertForPreTraining.from_pretrained('bert-large-uncased')
+
     logger.info(' > number of parameters: {}'.format(
         sum([p.nelement() for p in model.parameters()])))
+
+
+    if args.load_ckpt is not None:
+        logger.info('Start training from checkpoint `%s`' % args.load_ckpt)
+        ckpt = torch.load(args.load_ckpt, map_location=lambda storage, loc: storage)
+        model.load_state_dict(ckpt['model'])
+        it = ckpt['it']
 
     model.cuda()
 
@@ -205,6 +217,7 @@ if __name__ == '__main__':
         [n for n, p in param_optimizer if any(nd in n for nd in no_decay)]
     ]
 
+
     if args.use_fp16:
         """
         optimizer = FusedAdam(optimizer_grouped_parameters,
@@ -214,40 +227,21 @@ if __name__ == '__main__':
         """
         pass
 
-    # optimizer = torch.optim.Adam(optimizer_grouped_parameters,
-    #                              lr=args.learning_rate,
-    #                              eps=1e-6)
-    if args.use_fp16:
-        optimizer = BertAdam(optimizer_grouped_parameters,
-                             lr=args.learning_rate,
-                             warmup=args.warmup_proportion,
-                             t_total=args.train_iters,
-                             max_grad_norm=-1)
-    else:
-        optimizer = BertAdam(optimizer_grouped_parameters,
-                             lr=args.learning_rate,
-                             warmup=args.warmup_proportion,
-                             t_total=args.train_iters,
-                             max_grad_norm=-1)
 
+    optimizer = BertAdam(optimizer_grouped_parameters,
+                         lr=args.learning_rate,
+                         warmup=args.warmup_proportion,
+                         t_total=args.train_iters,
+                         max_grad_norm=-1)
+
+    if args.load_ckpt is not None:
+        optimizer.load_state_dict(ckpt['opt'])
 
     if args.use_fp16:
         optimizer = FP16_Optimizer(optimizer, dynamic_loss_scale=True, verbose=False)
 
-    # optimizer = Lamb(optimizer_grouped_parameters, lr=args.learning_rate)
-
-
     lr_schedule = WarmupLinearSchedule(warmup=args.warmup_proportion,
                                        t_total=args.train_iters)
-
-
-    if args.load_ckpt is not None:
-        logger.info('Start training from checkpoint `%s`' % args.load_ckpt)
-        ckpt = torch.load(args.load_ckpt)
-        model.load_state_dict(ckpt['model'])
-        # optimizer.load_state_dict(ckpt['opt'])
-        it = ckpt['it']
-
 
     if is_distributed:
         model = DDP(model, device_ids=[local_rank])
@@ -288,7 +282,7 @@ if __name__ == '__main__':
                 break
             # move to batch to gpu
             for k, v in batch.items():
-                batch[k] = batch[k].cuda()
+                batch[k] = batch[k].cuda(local_rank)
 
             lm_scores, nsp_scores = model.forward(batch['input_tokens'],
                                                   batch['segment_ids'],
@@ -365,7 +359,7 @@ if __name__ == '__main__':
                 else:
                     save_dict['opt'] = optimizer.state_dict()
 
-                save_dict['it'] = it
+                save_dict['it'] = it + 1
                 save_path = os.path.join(args.exp_dir, 'checkpoints', 'chkpt.%s.pt' % str(it))
                 torch.save(save_dict, save_path)
                 logger.info('Saved checkpoint to `%s`' % save_path)
