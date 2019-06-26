@@ -127,6 +127,25 @@ def create_logger(save_path):
     return logger
 
 
+class StartAt(object):
+
+    def __init__(self, iterable, start):
+        self.iterable = iterable
+        self.start = start
+        self.first = True
+
+    def __iter__(self):
+        iterator = iter(self.iterable)
+        if self.first:
+            self.first = False
+            for i in range(self.start - 1):
+                next(iterator)
+        return iterator
+
+    def set_epoch(self, epoch):
+        self.iterable.set_epoch(epoch)
+
+
 if __name__ == '__main__':
     args = get_args()
 
@@ -137,7 +156,8 @@ if __name__ == '__main__':
     rank = int(os.environ.get('RANK', 0))
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
     world_size = int(os.environ.get('WORLD_SIZE', 1))
-    it = 1
+    global_it = 1
+    local_it = 1
     event_writer = None
 
     if rank == 0:
@@ -152,7 +172,7 @@ if __name__ == '__main__':
 
     def log_tb(tag, val):
         if event_writer:
-            event_writer.add_scalar(tag, val, it)
+            event_writer.add_scalar(tag, val, global_it)
 
     is_distributed = (world_size > 1)
     if is_distributed:
@@ -184,9 +204,10 @@ if __name__ == '__main__':
 
     if args.load_ckpt is not None:
         logger.info('Start training from checkpoint `%s`' % args.load_ckpt)
-        ckpt = torch.load(args.load_ckpt, map_location=lambda storage, loc: storage)
+        ckpt = torch.load(args.load_ckpt, map_location='cpu')
         model.load_state_dict(ckpt['model'])
-        it = ckpt['it']
+        global_it = ckpt['it'] + 1
+
 
     model.cuda()
 
@@ -264,7 +285,7 @@ if __name__ == '__main__':
         train_sampler = RandomSampler(train_set)
         valid_sampler = RandomSampler(valid_set)
 
-    train_sampler = BatchSampler(train_sampler, args.batch_size, drop_last=True)
+    train_sampler = StartAt(BatchSampler(train_sampler, args.batch_size, drop_last=True), start=local_it)
     train_loader = DataLoader(train_set, batch_sampler=train_sampler, num_workers=args.num_workers, pin_memory=True)
 
     valid_sampler = BatchSampler(valid_sampler, args.batch_size, drop_last=True)
@@ -276,9 +297,13 @@ if __name__ == '__main__':
     model.train()
 
     train_lm_loss, train_nsp_loss, process_time = 0.0, 0.0, time.time()
-    while it < n_iters+1:
+    while global_it < n_iters+1:
+        # train_sampler.set_epoch(epoch)
+        if not train_sampler.first:
+            local_it = 1
+
         for batch in iter(train_loader):
-            if it >= n_iters + 1:
+            if global_it >= n_iters + 1:
                 break
             # move to batch to gpu
             for k, v in batch.items():
@@ -325,14 +350,14 @@ if __name__ == '__main__':
             optimizer.zero_grad()
 
             # report statistics every `args.report_iter` iterations
-            if it % args.report_every == 0:
+            if global_it % args.report_every == 0:
                 time_per_batch = 1000*(time.time() - process_time)/args.report_every
                 avg_train_lm_loss = train_lm_loss/args.report_every
                 avg_train_nsp_loss = train_nsp_loss/args.report_every
                 
 
                 log_str  = ' epoch{:2d} |'.format(epoch)
-                log_str += ' iteration: {:7d} |'.format(it)
+                log_str += ' iteration: {:7d} |'.format(global_it)
                 log_str += ' train_lm_loss: {:.3E} |'.format(avg_train_lm_loss)
                 log_str += ' train_nsp_loss: {:.3E} |'.format(avg_train_nsp_loss)
                 log_str += ' time per batch: {:4F}ms |'.format(time_per_batch)
@@ -347,24 +372,28 @@ if __name__ == '__main__':
                 train_lm_loss, train_nsp_loss, process_time = 0.0, 0.0, time.time()
 
             # save checkpoint every `args.save_iter` iterations
-            if it % args.save_every == 0 and rank == 0:
+            if global_it % args.save_every == 0 and rank == 0:
                 save_dict = dict()
+                saved_model = model
+                saved_opt = optimizer
                 if is_distributed:
-                    save_dict['model'] = model.module.state_dict()
-                else:
-                    save_dict['model'] = model.state_dict()
-
+                    saved_model = saved_model.module
                 if args.use_fp16:
-                    save_dict['opt'] = optimizer.optimizer.state_dict()
-                else:
-                    save_dict['opt'] = optimizer.state_dict()
+                    saved_model = saved_model.module
+                    saved_opt = saved_opt.optimizer
 
-                save_dict['it'] = it + 1
-                save_path = os.path.join(args.exp_dir, 'checkpoints', 'chkpt.%s.pt' % str(it))
+                save_dict['model'] = saved_model.state_dict()
+                save_dict['opt'] = saved_opt.state_dict()
+                save_dict['it'] = global_it
+                save_dict['local_it'] = local_it
+                save_dict['epoch'] = epoch
+
+                save_path = os.path.join(args.exp_dir, 'checkpoints', 'ckpt.%s.pt' % str(global_it))
                 torch.save(save_dict, save_path)
                 logger.info('Saved checkpoint to `%s`' % save_path)
 
-            it += 1
+            global_it += 1
+            local_it += 1
 
         logger.info("End of epoch %s" % str(epoch))
         epoch += 1
