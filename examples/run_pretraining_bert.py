@@ -163,11 +163,10 @@ if __name__ == '__main__':
     if rank == 0:
         if not os.path.exists(args.exp_dir):
             os.mkdir(args.exp_dir)
+            os.mkdir(os.path.join(args.exp_dir, 'logs'))
+            os.mkdir(os.path.join(args.exp_dir, 'checkpoints'))
+            os.mkdir(os.path.join(args.exp_dir, 'tensorboard'))
 
-        os.mkdir(os.path.join(args.exp_dir, 'logs'))
-        os.mkdir(os.path.join(args.exp_dir, 'checkpoints'))
-
-        os.mkdir(os.path.join(args.exp_dir, 'tensorboard'))
         event_writer = SummaryWriter(os.path.join(args.exp_dir, 'tensorboard'))
 
     def log_tb(tag, val):
@@ -219,8 +218,6 @@ if __name__ == '__main__':
         for name, _module in model.named_modules():
             if 'LayerNorm' in name:
                 _module.float()
-
-        print(model)
 
     param_optimizer = list(model.named_parameters())
 
