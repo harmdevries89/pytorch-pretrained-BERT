@@ -28,7 +28,7 @@ parser.add_argument(
 parser.add_argument(
     "--workdir",
     type=str,
-    default="/home/nathan/code/pytorch-pretrained-BERT",
+    default=os.getcwd(),
     help="which training config to use",
 )
 parser.add_argument(
