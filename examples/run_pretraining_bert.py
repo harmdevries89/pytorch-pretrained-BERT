@@ -165,6 +165,9 @@ if __name__ == '__main__':
             os.mkdir(os.path.join(args.exp_dir, 'checkpoints/rngs'))
             os.mkdir(os.path.join(args.exp_dir, 'tensorboard'))
 
+        output_args_file = os.path.join(args.exp_dir, 'training_args.bin')
+        torch.save(args, output_args_file)
+
         event_writer = SummaryWriter(os.path.join(args.exp_dir, 'tensorboard'))
 
     def log_tb(tag, val):
