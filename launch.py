@@ -7,7 +7,7 @@ import os
 import json
 import shutil
 
-ALL_NODES = "dgx01,dgx02,dgx03,dgx04,dgx05,dgx06"
+ALL_NODES = "dgx01,dgx02,dgx03,dgx04,dgx05,dgx06,dgx07"
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -23,7 +23,7 @@ parser.add_argument(
     help="names of nodes to launch training on e.g.: dgx01,dgx02",
 )
 parser.add_argument(
-    "--config", type=str, default="", help="which training config to use"
+    "--config", type=str, help="which training config to use"
 )
 parser.add_argument(
     "--workdir",
@@ -37,6 +37,7 @@ parser.add_argument(
     help="Also launch tensorboard instance for monitoring run",
 )
 parser.add_argument("--load-ckpt", type=str, help="checkpoint to resume from")
+parser.add_argument("--resume", action="store_true", help="checkpoint to resume from")
 parser.add_argument("--stop", action="store_true", help="whether to resume training")
 parser.add_argument(
     "--clean", action="store_true", help="whether to clean experiment directory"
@@ -48,6 +49,7 @@ parser.add_argument("--n-gpus", type=int, default=8, help="number of gpus per no
 parser.add_argument(
     "--master-port", type=int, default=1234, help="number of gpus per node"
 )
+parser.add_argument("--disable-infiniband", action="store_true", help="whether to tell NCCL to use Infiniband")
 
 args = parser.parse_args()
 
@@ -94,6 +96,9 @@ def ssh(host, command):
 
 
 def watch(processes):
+    if not isinstance(processes, list):
+        processes = [processes]
+
     while processes:
         not_dead = []
         for process in processes:
@@ -139,12 +144,14 @@ def setup_experiment(exp_dir, clean=False):
     os.mkdir(os.path.join(exp_dir, "tensorboard"))
 
 
-def launch_tensorboard(host, exp_dir, name):
-    cmd = "docker run -d -p 0.0.0.0:6006:6006 --name {name} -v {exp_dir}:/data -it tensorflow/tensorflow tensorboard --logdir /data".format(
-        exp_dir=exp_dir, name=name
+def launch_tensorboard(exp_dir):
+    cmd = "docker run -d -p 0.0.0.0:6006:6006 --name tensorboard -v {exp_dir}:/data -it tensorflow/tensorflow tensorboard --logdir /data".format(
+        exp_dir=exp_dir
     )
-    ssh(host, cmd)
+    os.system(cmd)
 
+def get_latest_checkpoint(path):
+    return max(os.listdir(path), key=lambda f: int(f.split('.')[1]))
 
 def main():
     user = os.environ["USER"]
@@ -155,37 +162,56 @@ def main():
         stop(args.name, args.nodes)
         return
 
-    model_config = {}
+    # Launch tensorboard
+    if args.launch_tensorboard:
+        launch_tensorboard(os.path.join(os.sep, "home", user, "experiments"))
+        return
 
-    if not args.config:
+
+    if args.resume or args.load_ckpt:
+        config_path = os.path.join(exp_dir, 'config.json')
+    elif args.config:
+        config_path = args.config
+    else:
         print("Must provide a config.json")
+        return
 
-    with open(args.config) as config_file:
+    model_config = {}
+    with open(config_path) as config_file:
         model_config = json.load(config_file)
 
     model_config["exp-dir"] = exp_dir
-    # Create directories
-    if not args.load_ckpt:
-        print("Creating experiment directory at {}".format(exp_dir))
 
-        clean = args.clean and query_yes_no(
-            "Are you sure you want to clean this experiment? This will delete all logs and checkpoints"
-        )
-        setup_experiment(exp_dir, clean=clean)
-    else:
-        ckpt_path = os.path.join(exp_dir, 'checkpoints', args.load_ckpt)
+    # Create directories
+    if args.load_ckpt or args.resume:
+        if args.resume:
+            ckpt_path = get_latest_checkpoint(os.path.join(exp_dir, 'checkpoints'))
+        else:
+            ckpt_path = os.path.join(exp_dir, 'checkpoints', args.load_ckpt)
+
         print("Resuming from checkpoint: {}".format(ckpt_path)) 
+        return
 
         if not os.path.exists(ckpt_path):
             print("Checkpoint does not exist. Aborting.")
             return
 
         model_config['load-ckpt'] = ckpt_path
+    else:
+        print("Creating experiment directory at {}".format(exp_dir))
+
+        clean = args.clean and query_yes_no(
+            "Are you sure you want to clean this experiment? This will delete all logs and checkpoints"
+        )
+        setup_experiment(exp_dir, clean=clean)
+
+        # Save copy of config json
+        shutil.copy(args.config, os.path.join(exp_dir, 'config.json'))
 
     # Connect to machines and launch
     docker_args = """--rm --name={name} --privileged -v /home/hdvries/:/home/hdvries -v /home/nathan/:/home/nathan -v /dev/infiniband:/dev/infiniband \
--w {workdir} --ipc=host --network=host -e PYTHONPATH={workdir} -e NCCL_DEBUG=INFO -e NCCL_SOCKET_IFNAME="^br,lo" --dns 192.168.170.100 """.format(
-        workdir=args.workdir, name=args.name
+-w {workdir} --ipc=host --network=host -e PYTHONPATH={workdir} -e NCCL_DEBUG=INFO -e NCCL_SOCKET_IFNAME="bond0.186" -e NCCL_IB_DISABLE={ib_disable} --dns 192.168.170.100 """.format(
+        workdir=args.workdir, name=args.name, ib_disable=int(args.disable_infiniband)
     )
     image = "images.borgy.elementai.net/multi/bert"
     master_ip = socket.gethostbyname(args.nodes[0])
@@ -207,8 +233,8 @@ def main():
             master_port=args.master_port,
         )
 
-        runner = "python -m torch.distributed.launch {} examples/run_pretraining_bert.py {} >> {exp_dir}/node.{node_rank}.log 2>&1".format(
-            distributed_args, model_args, exp_dir=exp_dir, node_rank=i
+        runner = "python -m torch.distributed.launch {} examples/run_pretraining_bert.py {} >> {exp_dir}/node.{host}.log 2>&1".format(
+            distributed_args, model_args, exp_dir=exp_dir, host=host
         )
 
         cmd = "{} {}".format(docker_cmd, runner)
@@ -217,10 +243,6 @@ def main():
 
         ssh_handle = ssh(host, cmd)
         processes.append(ssh_handle)
-
-    # Launch tensorboard
-    if args.launch_tensorboard:
-        launch_tensorboard(args.nodes[0], exp_dir, args.name)
 
     watch(processes)
 
