@@ -71,7 +71,7 @@ def get_args():
 
     opt_group = parser.add_argument_group('train', 'optimization configuration')
 
-    opt_group.add_argument('--batch-size', type=int, default=5,
+    opt_group.add_argument('--batch-size', type=int, default=4,
                        help='Data Loader batch size')
     model_group.add_argument('--max-seq-length', type=int, default=512,
                              help='Maximum sequence length during training')
@@ -142,9 +142,6 @@ class StartAt(object):
                 next(iterator)
         return iterator
 
-    def set_epoch(self, epoch):
-        self.iterable.set_epoch(epoch)
-
 
 if __name__ == '__main__':
     args = get_args()
@@ -157,7 +154,7 @@ if __name__ == '__main__':
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
     world_size = int(os.environ.get('WORLD_SIZE', 1))
     global_it = 1
-    local_it = 1
+    it_in_epoch = 1
     event_writer = None
 
     if rank == 0:
@@ -166,6 +163,7 @@ if __name__ == '__main__':
 
         os.mkdir(os.path.join(args.exp_dir, 'logs'))
         os.mkdir(os.path.join(args.exp_dir, 'checkpoints'))
+        os.mkdir(os.path.join(args.exp_dir, 'checkpoints/rngs'))
 
         os.mkdir(os.path.join(args.exp_dir, 'tensorboard'))
         event_writer = SummaryWriter(os.path.join(args.exp_dir, 'tensorboard'))
@@ -207,7 +205,7 @@ if __name__ == '__main__':
         ckpt = torch.load(args.load_ckpt, map_location='cpu')
         model.load_state_dict(ckpt['model'])
         global_it = ckpt['it'] + 1
-
+        it_in_epoch = ckpt['local_it'] + 1
 
     model.cuda()
 
@@ -273,34 +271,51 @@ if __name__ == '__main__':
     dataset = JSONDataset(dataset)
     dataset = PreprocessedBertDataset(dataset, tokenizer, max_seq_length=args.max_seq_length)
 
-    num_train_examples = math.ceil(len(dataset)*0.9)
-    train_set, valid_set = random_split(dataset, [num_train_examples, len(dataset) - num_train_examples])
+    # num_train_examples = math.ceil(len(dataset)*0.9)
+    # train_set, valid_set = random_split(dataset, [num_train_examples, len(dataset) - num_train_examples])
     # train_set = Subset(dataset, range(48))
     # valid_set = Subset(dataset, [i+40 for i in range(40)])
+    train_set = dataset
 
     if is_distributed:
-        train_sampler = DistributedSampler(train_set)
-        valid_sampler = DistributedSampler(valid_set)
+        dist_train_sampler = DistributedSampler(train_set)
     else:
-        train_sampler = RandomSampler(train_set)
-        valid_sampler = RandomSampler(valid_set)
+        dist_train_sampler = RandomSampler(train_set)
 
-    train_sampler = StartAt(BatchSampler(train_sampler, args.batch_size, drop_last=True), start=local_it)
+    train_sampler = StartAt(BatchSampler(dist_train_sampler, args.batch_size, drop_last=True), start=it_in_epoch)
     train_loader = DataLoader(train_set, batch_sampler=train_sampler, num_workers=args.num_workers, pin_memory=True)
 
-    valid_sampler = BatchSampler(valid_sampler, args.batch_size, drop_last=True)
-    valid_loader = DataLoader(valid_set, batch_sampler=valid_sampler, num_workers=args.num_workers, pin_memory=True)
+    # valid_sampler = BatchSampler(valid_sampler, args.batch_size, drop_last=True)
+    # valid_loader = DataLoader(valid_set, batch_sampler=valid_sampler, num_workers=args.num_workers, pin_memory=True)
 
     n_iters = args.train_iters
     epoch = 1
 
     model.train()
 
+    if args.load_ckpt is not None:
+        # reload rng state if starting from checkpoint
+        saved_it = args.load_ckpt.split('.')[1]
+        rng_path = os.path.join(args.exp_dir, 'checkpoints/rngs', 'rng.{}.{}'.format(saved_it, rank))
+        rng_dict = torch.load(rng_path)
+        torch.set_rng_state(rng_dict['torch_rng_state'])
+        torch.cuda.set_rng_state(rng_dict['cuda_rng_state'])
+        random.setstate(rng_dict['random_rng_state'])
+    else:
+        # otherwise, make sure that each process uses a different random seed
+        torch.manual_seed(args.seed + rank)
+        torch.cuda.manual_seed(args.seed + rank)
+        random.seed(args.seed + rank)
+
     train_lm_loss, train_nsp_loss, process_time = 0.0, 0.0, time.time()
     while global_it < n_iters+1:
-        # train_sampler.set_epoch(epoch)
+        if is_distributed:
+            # set epoch so that random shuffle
+            dist_train_sampler.set_epoch(epoch)
+
         if not train_sampler.first:
-            local_it = 1
+            #
+            it_in_epoch = 1
 
         for batch in iter(train_loader):
             if global_it >= n_iters + 1:
@@ -371,29 +386,40 @@ if __name__ == '__main__':
 
                 train_lm_loss, train_nsp_loss, process_time = 0.0, 0.0, time.time()
 
+                if rank == 0:
+                   logger.info(batch['input_tokens'][:5, :10])
+
             # save checkpoint every `args.save_iter` iterations
-            if global_it % args.save_every == 0 and rank == 0:
-                save_dict = dict()
-                saved_model = model
-                saved_opt = optimizer
-                if is_distributed:
-                    saved_model = saved_model.module
-                if args.use_fp16:
-                    saved_model = saved_model.module
-                    saved_opt = saved_opt.optimizer
+            if global_it % args.save_every == 0:
+                if rank == 0:
+                    save_dict = dict()
+                    saved_model = model
+                    saved_opt = optimizer
+                    if is_distributed:
+                        saved_model = saved_model.module
+                    if args.use_fp16:
+                        saved_model = saved_model.module
+                        saved_opt = saved_opt.optimizer
 
-                save_dict['model'] = saved_model.state_dict()
-                save_dict['opt'] = saved_opt.state_dict()
-                save_dict['it'] = global_it
-                save_dict['local_it'] = local_it
-                save_dict['epoch'] = epoch
+                    save_dict['model'] = saved_model.state_dict()
+                    save_dict['opt'] = saved_opt.state_dict()
+                    save_dict['it'] = global_it
+                    save_dict['it_in_epoch'] = it_in_epoch
+                    save_dict['epoch'] = epoch
 
-                save_path = os.path.join(args.exp_dir, 'checkpoints', 'ckpt.%s.pt' % str(global_it))
-                torch.save(save_dict, save_path)
-                logger.info('Saved checkpoint to `%s`' % save_path)
+                    save_path = os.path.join(args.exp_dir, 'checkpoints', 'ckpt.%s.pt' % str(global_it))
+                    torch.save(save_dict, save_path)
+                    logger.info('Saved checkpoint to `%s`' % save_path)
+
+                rng_state_dict = dict()
+                rng_state_dict['random_rng_state'] = random.getstate()
+                rng_state_dict['torch_rng_state'] = torch.get_rng_state()
+                rng_state_dict['cuda_rng_state'] = torch.cuda.get_rng_state()
+                rng_path = os.path.join(args.exp_dir, 'checkpoints/rngs', 'rng.{}.{}'.format(global_it, rank))
+                torch.save(rng_state_dict, rng_path)
 
             global_it += 1
-            local_it += 1
+            it_in_epoch += 1
 
         logger.info("End of epoch %s" % str(epoch))
         epoch += 1
