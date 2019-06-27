@@ -151,7 +151,8 @@ def launch_tensorboard(exp_dir):
     os.system(cmd)
 
 def get_latest_checkpoint(path):
-    return max(os.listdir(path), key=lambda f: int(f.split('.')[1]))
+    filename = max(os.listdir(path), key=lambda f: int(f.split('.')[1]))
+    return os.path.join(path, filename)
 
 def main():
     user = os.environ["USER"]
@@ -190,7 +191,6 @@ def main():
             ckpt_path = os.path.join(exp_dir, 'checkpoints', args.load_ckpt)
 
         print("Resuming from checkpoint: {}".format(ckpt_path)) 
-        return
 
         if not os.path.exists(ckpt_path):
             print("Checkpoint does not exist. Aborting.")
