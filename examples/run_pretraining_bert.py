@@ -207,7 +207,7 @@ if __name__ == '__main__':
         ckpt = torch.load(args.load_ckpt, map_location='cpu')
         model.load_state_dict(ckpt['model'])
         global_it = ckpt['it'] + 1
-        it_in_epoch = ckpt['local_it'] + 1
+        it_in_epoch = ckpt['it_in_epoch'] + 1
 
     model.cuda()
 

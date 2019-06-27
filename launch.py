@@ -141,6 +141,7 @@ def setup_experiment(exp_dir, clean=False):
     os.mkdir(exp_dir)
     os.mkdir(os.path.join(exp_dir, "logs"))
     os.mkdir(os.path.join(exp_dir, "checkpoints"))
+    os.mkdir(os.path.join(exp_dir, "checkpoints/rngs"))
     os.mkdir(os.path.join(exp_dir, "tensorboard"))
 
 
@@ -151,7 +152,7 @@ def launch_tensorboard(exp_dir):
     os.system(cmd)
 
 def get_latest_checkpoint(path):
-    filename = max(os.listdir(path), key=lambda f: int(f.split('.')[1]))
+    filename = max([f for f in os.listdir(path) if 'ckpt' in f], key=lambda f: int(f.split('.')[1]))
     return os.path.join(path, filename)
 
 def main():
@@ -169,7 +170,7 @@ def main():
         return
 
 
-    if args.resume or args.load_ckpt:
+    if args.resume:
         config_path = os.path.join(exp_dir, 'config.json')
     elif args.config:
         config_path = args.config
