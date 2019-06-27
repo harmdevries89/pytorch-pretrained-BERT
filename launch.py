@@ -170,10 +170,10 @@ def main():
         return
 
 
-    if args.resume:
-        config_path = os.path.join(exp_dir, 'config.json')
-    elif args.config:
+    if args.config:
         config_path = args.config
+    elif args.resume:
+        config_path = os.path.join(exp_dir, 'config.json')
     else:
         print("Must provide a config.json")
         return
@@ -244,8 +244,6 @@ def main():
 
         ssh_handle = ssh(host, cmd)
         processes.append(ssh_handle)
-
-    watch(processes)
 
 
 if __name__ == "__main__":

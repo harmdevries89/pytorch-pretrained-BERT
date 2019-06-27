@@ -9,7 +9,7 @@
   "hidden-dropout": "0.1",
   "attention-dropout": "0.1",
   "train-iters": "1000000",
-  "report-every": "100",
+  "report-every": "1",
   "save-every": "10000",
   "num-workers": "1",
   "learning-rate": "1e-4",

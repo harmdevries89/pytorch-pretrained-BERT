@@ -207,7 +207,10 @@ if __name__ == '__main__':
         ckpt = torch.load(args.load_ckpt, map_location='cpu')
         model.load_state_dict(ckpt['model'])
         global_it = ckpt['it'] + 1
-        it_in_epoch = ckpt['it_in_epoch'] + 1
+        if 'local_it' in ckpt:
+            it_in_epoch = ckpt['local_it'] + 1
+        else:
+            it_in_epoch = ckpt['it_in_epoch'] + 1
 
     model.cuda()
 
@@ -297,10 +300,11 @@ if __name__ == '__main__':
         # reload rng state if starting from checkpoint
         saved_it = args.load_ckpt.split('.')[1]
         rng_path = os.path.join(args.exp_dir, 'checkpoints/rngs', 'rng.{}.{}'.format(saved_it, rank))
-        rng_dict = torch.load(rng_path)
-        torch.set_rng_state(rng_dict['torch_rng_state'])
-        torch.cuda.set_rng_state(rng_dict['cuda_rng_state'])
-        random.setstate(rng_dict['random_rng_state'])
+        if os.path.exists(rng_path):
+            rng_dict = torch.load(rng_path)
+            torch.set_rng_state(rng_dict['torch_rng_state'])
+            torch.cuda.set_rng_state(rng_dict['cuda_rng_state'])
+            random.setstate(rng_dict['random_rng_state'])
     else:
         # otherwise, make sure that each process uses a different random seed
         torch.manual_seed(args.seed + rank)
@@ -385,9 +389,6 @@ if __name__ == '__main__':
                 # log_tb('lr_this_step', lr_this_step)
 
                 train_lm_loss, train_nsp_loss, process_time = 0.0, 0.0, time.time()
-
-                if rank == 0:
-                   logger.info(batch['input_tokens'][:5, :10])
 
             # save checkpoint every `args.save_iter` iterations
             if global_it % args.save_every == 0:
