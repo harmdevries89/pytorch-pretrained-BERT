@@ -889,7 +889,7 @@ def main():
 
     if os.path.exists(args.output_dir) and os.listdir(args.output_dir) and args.do_train:
         raise ValueError("Output directory () already exists and is not empty.")
-    if not os.path.exists(args.output_dir):
+    if not os.path.exists(args.output_dir) and args.local_rank <= 0:
         os.makedirs(args.output_dir)
 
     tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
@@ -899,10 +899,13 @@ def main():
     if args.do_train:
         train_examples = read_squad_examples(
             input_file=args.train_file, is_training=True, version_2_with_negative=args.version_2_with_negative)
+        logger.info(len(train_examples))
         num_train_optimization_steps = int(
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps) * args.num_train_epochs
+        logger.info(num_train_optimization_steps)
         if args.local_rank != -1:
-            num_train_optimization_steps = num_train_optimization_steps // torch.distributed.get_world_size()
+            num_train_optimization_steps = (num_train_optimization_steps // torch.distributed.get_world_size())
+        logger.info(num_train_optimization_steps)
 
     # Prepare model
     model = BertForQuestionAnswering.from_pretrained(args.bert_model,
@@ -955,8 +958,7 @@ def main():
         else:
             optimizer = BertAdam(optimizer_grouped_parameters,
                                  lr=args.learning_rate,
-                                 warmup=args.warmup_proportion,
-                                 t_total=num_train_optimization_steps)
+                                 schedule=None)
 
     global_step = 0
     if args.do_train:
@@ -983,6 +985,7 @@ def main():
         logger.info("  Num split examples = %d", len(train_features))
         logger.info("  Batch size = %d", args.train_batch_size)
         logger.info("  Num steps = %d", num_train_optimization_steps)
+        logger.info("  Worldsize = %d", torch.distributed.get_world_size())
         all_input_ids = torch.tensor([f.input_ids for f in train_features], dtype=torch.long)
         all_input_mask = torch.tensor([f.input_mask for f in train_features], dtype=torch.long)
         all_segment_ids = torch.tensor([f.segment_ids for f in train_features], dtype=torch.long)
@@ -1036,10 +1039,12 @@ def main():
         tokenizer.save_vocabulary(args.output_dir)
 
         # Load a trained model and vocabulary that you have fine-tuned
-        model = BertForQuestionAnswering.from_pretrained(args.output_dir)
-        tokenizer = BertTokenizer.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
-    else:
-        model = BertForQuestionAnswering.from_pretrained(args.bert_model)
+        # config = BertConfig()
+        # model = BertForQuestionAnswering(config)
+        # model = BertForQuestionAnswering.from_pretrained(args.bert_model)
+        # tokenizer = BertTokenizer.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
+    # else:
+    #     model = BertForQuestionAnswering.from_pretrained(args.bert_model)
 
     model.to(device)
 
