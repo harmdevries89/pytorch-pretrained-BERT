@@ -186,7 +186,6 @@ def main():
     if args.local_rank not in [-1, 0]:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
     tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
-
     model = BertForQuestionAnswering.from_pretrained(args.bert_model)
     if args.local_rank == 0:
         torch.distributed.barrier()
@@ -276,7 +275,8 @@ def main():
         else:
             optimizer = BertAdam(optimizer_grouped_parameters,
                                  lr=args.learning_rate,
-                                 schedule=None)
+                                 warmup=args.warmup_proportion,
+                                 t_total=num_train_optimization_steps)
 
         global_step = 0
 
@@ -329,7 +329,6 @@ def main():
         tokenizer.save_vocabulary(args.output_dir)
 
         # Load a trained model and vocabulary that you have fine-tuned
-
         model = BertForQuestionAnswering.from_pretrained(args.output_dir)
         tokenizer = BertTokenizer.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
 
