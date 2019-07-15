@@ -371,7 +371,7 @@ class FP16_Optimizer(object):
             optimizer.load_state_dict(checkpoint['optimizer'])
         """
         # I think it should actually be ok to reload the optimizer before the model.
-        self.loss_scaler = state_dict['loss_scaler']
+        #self.loss_scaler = state_dict['loss_scaler']
         self.dynamic_loss_scale = state_dict['dynamic_loss_scale']
         self.overflow = state_dict['overflow']
         self.first_closure_call_this_step = state_dict['first_closure_call_this_step']

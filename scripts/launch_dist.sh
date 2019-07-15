@@ -1,7 +1,7 @@
 #!/bin/bash
 
 MASTER=dgx01
-NODES=(dgx01 dgx02)
+NODES=(dgx01 dgx02 dgx04 dgx05 dgx06)
 MASTER_IP=`dig +short ${MASTER}.elementai.net | tail -n 1`
 NNODES=${#NODES[@]}
 NGPUS=8

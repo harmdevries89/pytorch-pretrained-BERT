@@ -8,8 +8,8 @@ import os
 
 
 #from apex.optimizers import FusedAdam, FP16_Optimizer
-from apex.fp16_utils import FP16_Optimizer
-from fp16_opt import FP16_Module
+#from apex.fp16_utils import FP16_Optimizer
+from fp16_opt import FP16_Module, FP16_Optimizer
 # from apex.parallel import DistributedDataParallel as DDP
 from logging.handlers import RotatingFileHandler
 from tqdm import tqdm
@@ -143,6 +143,52 @@ class StartAt(object):
         return iterator
 
 
+def train(model, optimizer, batch, args):
+    # move to batch to gpu
+    for k, v in batch.items():
+        batch[k] = batch[k].cuda(local_rank)
+
+    lm_scores, nsp_scores = model.forward(batch['input_tokens'],
+                                          batch['segment_ids'],
+                                          batch['attention_mask'])
+    lm_loss = calc_loss(lm_scores.view(-1, lm_scores.shape[-1]), batch['lm_labels'].view(-1))
+    nsp_loss = calc_loss(nsp_scores.view(-1, 2), batch['is_random_next'].view(-1))
+    loss = lm_loss + nsp_loss
+
+    if args.use_fp16:
+        # backward pass
+        optimizer.backward(loss)
+    else:
+        loss.backward()
+
+    # if args.use_fp16:
+    #     for p_g, n_g in zip(optimizer.optimizer.param_groups, optimizer_grouped_names):
+    #         for p, n in zip(p_g['params'], n_g):
+    #             log_tb(n + '_grad', p.grad.data.norm(2).item())
+    #             log_tb(n + '_param', p.data.norm(2).item())
+    # else:
+    #     for p_g, n_g in zip(optimizer.param_groups, optimizer_grouped_names):
+    #         for p, n in zip(p_g['params'], n_g):
+    #             log_tb(n + '_grad', p.grad.data.norm(2).item())
+    #             log_tb(n + '_param', p.data.norm(2).item())
+
+    if args.use_fp16:
+        optimizer.clip_master_grads(args.max_grad_norm, norm_type=2)
+    else:
+        torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+
+    # set the learning rate
+    # lr_this_step = args.learning_rate * lr_schedule.get_lr(it, args.warmup_proportion)
+    # for param_group in optimizer.param_groups:
+    #     param_group['lr'] = lr_this_step
+
+    # optimizer step
+    optimizer.step()
+    optimizer.zero_grad()
+
+    return nsp_loss, lm_loss
+
+
 if __name__ == '__main__':
     args = get_args()
 
@@ -155,6 +201,7 @@ if __name__ == '__main__':
     world_size = int(os.environ.get('WORLD_SIZE', 1))
     global_it = 1
     it_in_epoch = 1
+    epoch = 1
     event_writer = None
 
     if rank == 0:
@@ -207,6 +254,7 @@ if __name__ == '__main__':
         ckpt = torch.load(args.load_ckpt, map_location='cpu')
         model.load_state_dict(ckpt['model'])
         global_it = ckpt['it'] + 1
+        epoch = ckpt['epoch']
         if 'local_it' in ckpt:
             it_in_epoch = ckpt['local_it'] + 1
         else:
@@ -256,11 +304,11 @@ if __name__ == '__main__':
                          t_total=args.train_iters,
                          max_grad_norm=-1)
 
-    if args.load_ckpt is not None:
-        optimizer.load_state_dict(ckpt['opt'])
-
     if args.use_fp16:
         optimizer = FP16_Optimizer(optimizer, dynamic_loss_scale=True, verbose=False)
+
+    if args.load_ckpt is not None:
+        optimizer.load_state_dict(ckpt['opt'])
 
     lr_schedule = WarmupLinearSchedule(warmup=args.warmup_proportion,
                                        t_total=args.train_iters)
@@ -292,7 +340,6 @@ if __name__ == '__main__':
     # valid_loader = DataLoader(valid_set, batch_sampler=valid_sampler, num_workers=args.num_workers, pin_memory=True)
 
     n_iters = args.train_iters
-    epoch = 1
 
     model.train()
 
@@ -324,49 +371,11 @@ if __name__ == '__main__':
         for batch in iter(train_loader):
             if global_it >= n_iters + 1:
                 break
-            # move to batch to gpu
-            for k, v in batch.items():
-                batch[k] = batch[k].cuda(local_rank)
 
-            lm_scores, nsp_scores = model.forward(batch['input_tokens'],
-                                                  batch['segment_ids'],
-                                                  batch['attention_mask'])
-            lm_loss = calc_loss(lm_scores.view(-1, lm_scores.shape[-1]), batch['lm_labels'].view(-1))
-            nsp_loss = calc_loss(nsp_scores.view(-1, 2), batch['is_random_next'].view(-1))
-            loss = lm_loss + nsp_loss
+            nsp_loss, lm_loss = train(model, optimizer, batch, args)
+
             train_nsp_loss += nsp_loss.item()
             train_lm_loss += lm_loss.item()
-
-            if args.use_fp16:
-                # backward pass
-                optimizer.backward(loss)
-            else:
-                loss.backward()
-
-            # if args.use_fp16:
-            #     for p_g, n_g in zip(optimizer.optimizer.param_groups, optimizer_grouped_names):
-            #         for p, n in zip(p_g['params'], n_g):
-            #             log_tb(n + '_grad', p.grad.data.norm(2).item())
-            #             log_tb(n + '_param', p.data.norm(2).item())
-            # else:
-            #     for p_g, n_g in zip(optimizer.param_groups, optimizer_grouped_names):
-            #         for p, n in zip(p_g['params'], n_g):
-            #             log_tb(n + '_grad', p.grad.data.norm(2).item())
-            #             log_tb(n + '_param', p.data.norm(2).item())
-
-            if args.use_fp16:
-                optimizer.clip_master_grads(args.max_grad_norm, norm_type=2)
-            else:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
-
-            # set the learning rate
-            # lr_this_step = args.learning_rate * lr_schedule.get_lr(it, args.warmup_proportion)
-            # for param_group in optimizer.param_groups:
-            #     param_group['lr'] = lr_this_step
-
-            # optimizer step
-            optimizer.step()
-            optimizer.zero_grad()
 
             # report statistics every `args.report_iter` iterations
             if global_it % args.report_every == 0:
@@ -400,7 +409,6 @@ if __name__ == '__main__':
                         saved_model = saved_model.module
                     if args.use_fp16:
                         saved_model = saved_model.module
-                        saved_opt = saved_opt.optimizer
 
                     save_dict['model'] = saved_model.state_dict()
                     save_dict['opt'] = saved_opt.state_dict()
@@ -417,6 +425,7 @@ if __name__ == '__main__':
                 rng_state_dict['torch_rng_state'] = torch.get_rng_state()
                 rng_state_dict['cuda_rng_state'] = torch.cuda.get_rng_state()
                 rng_path = os.path.join(args.exp_dir, 'checkpoints/rngs', 'rng.{}.{}'.format(global_it, rank))
+
                 torch.save(rng_state_dict, rng_path)
 
             global_it += 1

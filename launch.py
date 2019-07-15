@@ -23,6 +23,11 @@ parser.add_argument(
     help="names of nodes to launch training on e.g.: dgx01,dgx02",
 )
 parser.add_argument(
+    "--master",
+    type=str,
+    help="hostname of node to designate as master for torch.distributed",
+)
+parser.add_argument(
     "--config", type=str, help="which training config to use"
 )
 parser.add_argument(
@@ -36,7 +41,7 @@ parser.add_argument(
     action="store_true",
     help="Also launch tensorboard instance for monitoring run",
 )
-parser.add_argument("--load-ckpt", type=str, help="checkpoint to resume from")
+parser.add_argument("--from-ckpt", type=str, help="checkpoint to resume from")
 parser.add_argument("--resume", action="store_true", help="checkpoint to resume from")
 parser.add_argument("--stop", action="store_true", help="whether to resume training")
 parser.add_argument(
@@ -50,6 +55,7 @@ parser.add_argument(
     "--master-port", type=int, default=1234, help="number of gpus per node"
 )
 parser.add_argument("--disable-infiniband", action="store_true", help="whether to tell NCCL to use Infiniband")
+parser.add_argument("--cuda-debug", action="store_true", help="whether to tell NCCL to use Infiniband")
 
 args = parser.parse_args()
 
@@ -146,7 +152,7 @@ def setup_experiment(exp_dir, clean=False):
 
 
 def launch_tensorboard(exp_dir):
-    cmd = "docker run -d -p 0.0.0.0:6006:6006 --name tensorboard -v {exp_dir}:/data -it tensorflow/tensorflow tensorboard --logdir /data".format(
+    cmd = "docker run -d --rm -p 0.0.0.0:6006:6006 --user 12109 --name tensorboard -v {exp_dir}:/data -it tensorflow/tensorflow tensorboard --logdir /data".format(
         exp_dir=exp_dir
     )
     os.system(cmd)
@@ -185,11 +191,11 @@ def main():
     model_config["exp-dir"] = exp_dir
 
     # Create directories
-    if args.load_ckpt or args.resume:
-        if args.resume:
-            ckpt_path = get_latest_checkpoint(os.path.join(exp_dir, 'checkpoints'))
+    if args.resume or args.from_ckpt:
+        if args.from_ckpt:
+            ckpt_path = args.from_ckpt
         else:
-            ckpt_path = os.path.join(exp_dir, 'checkpoints', args.load_ckpt)
+            ckpt_path = get_latest_checkpoint(os.path.join(exp_dir, 'checkpoints'))
 
         print("Resuming from checkpoint: {}".format(ckpt_path)) 
 
@@ -198,7 +204,8 @@ def main():
             return
 
         model_config['load-ckpt'] = ckpt_path
-    else:
+
+    if not args.resume:
         print("Creating experiment directory at {}".format(exp_dir))
 
         clean = args.clean and query_yes_no(
@@ -210,12 +217,14 @@ def main():
         shutil.copy(args.config, os.path.join(exp_dir, 'config.json'))
 
     # Connect to machines and launch
+    ib_disable = "-e NCCL_SOCKET_IFNAME=\"bond0.186\" -e NCCL_IB_DISABLE=1" if args.disable_infiniband else "-e NCCL_SOCKET_IFNAME=\"^lo,br\""
     docker_args = """--rm --name={name} --privileged -v /home/hdvries/:/home/hdvries -v /home/nathan/:/home/nathan -v /dev/infiniband:/dev/infiniband \
--w {workdir} --ipc=host --network=host -e PYTHONPATH={workdir} -e NCCL_DEBUG=INFO -e NCCL_SOCKET_IFNAME="bond0.186" -e NCCL_IB_DISABLE={ib_disable} --dns 192.168.170.100 """.format(
-        workdir=args.workdir, name=args.name, ib_disable=int(args.disable_infiniband)
+-w {workdir} --ipc=host --network=host -e PYTHONPATH={workdir} -e NCCL_DEBUG=INFO {cuda_debug} {ib_disable} --dns 192.168.170.100 """.format(
+        workdir=args.workdir, name=args.name, ib_disable=ib_disable, cuda_debug=("-e CUDA_LAUNCH_BLOCKING=1" if args.cuda_debug else "")
     )
-    image = "images.borgy.elementai.net/multi/bert"
-    master_ip = socket.gethostbyname(args.nodes[0])
+    image = "images.borgy.elementai.net/hdvries/pt_bert_multi:1906"
+    master = args.master or args.nodes[0]
+    master_ip = socket.gethostbyname(master)
 
     if model_config:
         model_args = " ".join("--{} {}".format(k, v) for k, v in model_config.items())
