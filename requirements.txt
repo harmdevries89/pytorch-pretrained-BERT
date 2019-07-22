@@ -9,5 +9,8 @@ requests
 # For OpenAI GPT
 regex
 
+# For XLNet
+sentencepiece
+
 # For logging metrics
 tensorboardX
