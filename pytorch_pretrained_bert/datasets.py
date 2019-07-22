@@ -350,30 +350,70 @@ class PreprocessedBertDataset(Dataset):
             else:
                 trunc_tokens.pop()
 
-    def create_masked_lm_predictions(self, tokens, rng):
-        cand_indexes = [i for i, tok in enumerate(tokens) if tok not in ('[SEP]', '[CLS]', '[PAD]')]
+    def create_masked_lm_predictions(self, tokens, rng, whole_word_mask=True):
+        cand_indexes = []
+        for (i, token) in enumerate(tokens):
+            if token in ('[SEP]', '[CLS]', '[PAD]'):
+                continue
+            # Whole Word Masking means that if we mask all of the wordpieces
+            # corresponding to an original word. When a word has been split into
+            # WordPieces, the first token does not have any marker and any subsequence
+            # tokens are prefixed with ##. So whenever we see the ## token, we
+            # append it to the previous set of word indexes.
+            #
+            # Note that Whole Word Masking does *not* change the training code
+            # at all -- we still predict each WordPiece independently, softmaxed
+            # over the entire vocabulary.
+            if (whole_word_mask and len(cand_indexes) >= 1 and
+                    token.startswith("##")):
+                cand_indexes[-1].append(i)
+            else:
+                cand_indexes.append([i])
+
         rng.shuffle(cand_indexes)
         output_tokens = list(tokens)
         num_to_predict = min(self.max_predictions_per_seq,
-                             max(1, int(round(len(cand_indexes) * self.masked_lm_prob))))
+                max(1, int(round(len(tokens) * self.masked_lm_prob))))
+
+        covered_indices = set()
+        num_masked = 0
         lm_labels = [-1]*len(tokens)
-        for index in cand_indexes[:num_to_predict]:
-            masked_token = None
-            # 80% of the time, replace with [MASK]
-            if rng.random() < 0.8:
-                masked_token = "[MASK]"
-            else:
-                # 10% of the time, keep original
-                if rng.random() < 0.5:
-                    masked_token = tokens[index]
-                # 10% of the time, replace with random word
+        for index_set in cand_indexes:
+            if num_masked >= num_to_predict:
+                break
+            # If adding a whole-word mask would exceed the maximum number of
+            # predictions, then just skip this candidate.
+            if num_masked + len(index_set) > num_to_predict:
+                continue
+
+            is_any_index_covered = False
+            for index in index_set:
+                if index in covered_indices:
+                    is_any_index_covered = True
+                    break
+            if is_any_index_covered:
+                continue
+            for index in index_set:
+                covered_indices.add(index)
+
+                masked_token = None
+                # 80% of the time, replace with [MASK]
+                if rng.random() < 0.8:
+                    masked_token = "[MASK]"
                 else:
-                    random_tok_ind = rng.randint(0, len(self.tokenizer.vocab) - 1)
-                    masked_token = self.tokenizer.ids_to_tokens[random_tok_ind]
+                    # 10% of the time, keep original
+                    if rng.random() < 0.5:
+                        masked_token = tokens[index]
+                    # 10% of the time, replace with random word
+                    else:
+                        random_tok_ind = rng.randint(0, len(self.tokenizer.vocab) - 1)
+                        masked_token = self.tokenizer.ids_to_tokens[random_tok_ind]
 
-            output_tokens[index] = masked_token
-            lm_labels[index] = self.tokenizer.vocab[tokens[index]]
+                output_tokens[index] = masked_token
+                lm_labels[index] = self.tokenizer.vocab[tokens[index]]
+                num_masked += 1
 
+        assert num_masked <= num_to_predict
         return output_tokens, lm_labels
 
     def pad_seq(self, seq, max_len, val):
